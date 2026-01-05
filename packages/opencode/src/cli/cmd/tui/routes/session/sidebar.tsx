@@ -40,23 +40,78 @@ export function Sidebar(props: { sessionID: string }) {
       ).length,
   )
 
-  const cost = createMemo(() => {
-    const total = messages().reduce((sum, x) => sum + (x.role === "assistant" ? x.cost : 0), 0)
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-    }).format(total)
+  const totalTokens = (message: AssistantMessage) =>
+    message.tokens.input +
+    message.tokens.output +
+    message.tokens.reasoning +
+    message.tokens.cache.read +
+    message.tokens.cache.write
+
+  const currencyFormatter = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
   })
 
+  const lastAssistant = createMemo(
+    () => messages().findLast((m) => m.role === "assistant") as AssistantMessage | undefined,
+  )
+
+  const isSubscription = createMemo(() => {
+    const last = lastAssistant()
+    if (!last) return false
+    const provider = sync.data.provider.find((p) => p.id === last.providerID)
+    const methods = sync.data.provider_auth[last.providerID] ?? []
+    return Boolean(provider?.key) || methods.some((m) => m.type === "oauth")
+  })
+
+  const messageCount = createMemo(() => messages().length)
+  const assistantCount = createMemo(() => messages().filter((m) => m.role === "assistant").length)
+  const userCount = createMemo(() => messages().filter((m) => m.role === "user").length)
+
+  const totalCostNumber = createMemo(() =>
+    messages().reduce((sum, x) => sum + (x.role === "assistant" ? ((x as AssistantMessage).cost ?? 0) : 0), 0),
+  )
+  const totalCostFormatted = createMemo(() => currencyFormatter.format(totalCostNumber()))
+
+  const lastAssistantCostNumber = createMemo(() => {
+    const last = lastAssistant()
+    return last ? (last.cost ?? 0) : 0
+  })
+  const lastAssistantCostFormatted = createMemo(() => currencyFormatter.format(lastAssistantCostNumber()))
+
+  const avgAssistantCostNumber = createMemo(() => {
+    const eligible = messages()
+      .filter((x) => x.role === "assistant")
+      .map((x) => x as AssistantMessage)
+      .filter((x) => typeof x.cost === "number" && x.cost > 0)
+    if (eligible.length === 0) return 0
+    const sum = eligible.reduce((sum, x) => sum + (x.cost ?? 0), 0)
+    return sum / eligible.length
+  })
+  const avgAssistantCostFormatted = createMemo(() => currencyFormatter.format(avgAssistantCostNumber()))
+
   const context = createMemo(() => {
-    const last = messages().findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
-    if (!last) return
-    const total =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    const model = sync.data.provider.find((x) => x.id === last.providerID)?.models[last.modelID]
+    const last = messages().findLast((x) => x.role === "assistant" && totalTokens(x) > 0) as
+      | AssistantMessage
+      | undefined
+
+    const used = last ? totalTokens(last) : 0
+    const model = last ? sync.data.provider.find((x) => x.id === last.providerID)?.models[last.modelID] : undefined
+    const limit = model?.limit?.context
+    const percentage = typeof limit === "number" && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : null
+    const remaining = typeof limit === "number" && limit > 0 ? Math.max(limit - used, 0) : null
+    const overflow = typeof limit === "number" && limit > 0 && used > limit ? used - limit : null
+
     return {
-      tokens: total.toLocaleString(),
-      percentage: model?.limit.context ? Math.round((total / model.limit.context) * 100) : null,
+      used,
+      usedFormatted: used.toLocaleString(),
+      limit,
+      limitFormatted: typeof limit === "number" ? limit.toLocaleString() : "unknown",
+      percentage,
+      remaining,
+      remainingFormatted: remaining !== null ? remaining.toLocaleString() : null,
+      overflow,
+      overflowFormatted: overflow !== null ? overflow.toLocaleString() : null,
     }
   })
 
@@ -92,9 +147,26 @@ export function Sidebar(props: { sessionID: string }) {
               <text fg={theme.text}>
                 <b>Context</b>
               </text>
-              <text fg={theme.textMuted}>{context()?.tokens ?? 0} tokens</text>
-              <text fg={theme.textMuted}>{context()?.percentage ?? 0}% used</text>
-              <text fg={theme.textMuted}>{cost()} spent</text>
+              <text fg={theme.textMuted}>Last: {context().usedFormatted} tokens</text>
+              <text fg={theme.textMuted}>Limit: {context().limitFormatted}</text>
+              <Show when={context().percentage !== null}>
+                <text fg={theme.textMuted}>{context().percentage}% used</text>
+              </Show>
+              <Show when={context().remainingFormatted !== null}>
+                <text fg={theme.textMuted}>Rem: {context().remainingFormatted} tokens</text>
+              </Show>
+              <Show when={context().overflowFormatted !== null}>
+                <text fg={theme.textMuted}>Over: +{context().overflowFormatted} tokens</text>
+              </Show>
+              <text fg={theme.textMuted}>
+                Cost: {totalCostFormatted()}
+                {isSubscription() ? " (sub)" : ""}
+              </text>
+              <text fg={theme.textMuted}>Last: {lastAssistantCostFormatted()}</text>
+              <text fg={theme.textMuted}>Avg/asst: {avgAssistantCostFormatted()}</text>
+              <text fg={theme.textMuted}>Msgs: {messageCount()}</text>
+              <text fg={theme.textMuted}>Asst: {assistantCount()}</text>
+              <text fg={theme.textMuted}>User: {userCount()}</text>
             </box>
             <Show when={mcpEntries().length > 0}>
               <box>
